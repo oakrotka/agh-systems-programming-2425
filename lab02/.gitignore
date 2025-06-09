@@ -1,0 +1,5 @@
+libcollatz.so*
+collatz.a
+client-dynamic
+client-shared
+client-static
