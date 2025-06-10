@@ -58,6 +58,7 @@ int patients_left;
 
 int queue[HOSPITAL_CAPACITY], patients_waiting = 0;
 int medicine = MEDICINE_CAPACITY, pharmaceutists_waiting = 0;
+bool delivery_rn = false;
 pthread_mutex_t hospital_mutex = PTHREAD_MUTEX_INITIALIZER;
 // May be waited on only by the doctor 
 pthread_cond_t doctor_sleep = PTHREAD_COND_INITIALIZER;
@@ -94,25 +95,24 @@ patients_check:
       free(msg);
 
       sleep(2 + rand() % 3);
+      printf("\n");
 
       patients_left -= patients_waiting;
       medicine -= patients_waiting;
       patients_waiting = 0;
 
       pthread_cond_broadcast(&queue_cond);
-      // This allows the patients to be released instantly but creates a potential deadlock
-      // pthread_mutex_unlock(&hospital_mutex);
-      // pthread_mutex_lock(&hospital_mutex);
     } else if (pharmaceutists_waiting > 0 && medicine < MEDICINE_CAPACITY) {
       log_msg("Lekarz: przyjmuję dostawę leków");
-      pthread_cond_broadcast(&medicine_cond);
-      pthread_mutex_unlock(&hospital_mutex);
-      pthread_mutex_lock(&hospital_mutex);
+      pthread_cond_signal(&medicine_cond);
+      while (!delivery_rn) pthread_cond_wait(&doctor_sleep, &hospital_mutex);
 
       sleep(1 + rand() % 3);
+      printf("\n");
 
       int dbg = pharmaceutists_waiting--;
       medicine = MEDICINE_CAPACITY;
+      delivery_rn = false;
       pthread_cond_signal(&delivery_cond);
       pthread_mutex_unlock(&hospital_mutex);
       pthread_mutex_lock(&hospital_mutex);
@@ -143,20 +143,20 @@ void *pharmaceutist(void *pharm_id) {
     pthread_mutex_lock(&hospital_mutex);
 
     pharmaceutists_waiting++;
-    if (medicine >= HOSPITAL_CAPACITY) {
+    if (delivery_rn || medicine >= HOSPITAL_CAPACITY) {
       log_msg_with_id(id, "Farmaceuta", "czekam na oproznienie apteczki");
       do {
         pthread_cond_wait(&medicine_cond, &hospital_mutex);
-      } while (medicine >= HOSPITAL_CAPACITY);
+      } while (delivery_rn || medicine >= HOSPITAL_CAPACITY);
     }
 
     assert(medicine < HOSPITAL_CAPACITY);
 
-    // The doctor may not be sleeping right now
     log_msg_with_id(id, "Farmaceuta", "budzę lekarza");
     pthread_cond_broadcast(&doctor_sleep);
 
     log_msg_with_id(id, "Farmaceuta", "dostarczam leki");
+    delivery_rn = true;
     pthread_cond_wait(&delivery_cond, &hospital_mutex);
 
     log_msg_with_id(id, "Farmaceuta", "zakończyłom dostawę");
