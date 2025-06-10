@@ -1,11 +1,11 @@
 CC = gcc
-CFLAGS = -Wall -O
+CFLAGS = -Wall
 .PHONY: all clean test
 
 all: hospital
 
 test: all 
-	./hospital
+	./hospital 18 3
 
 hospital: hospital.c 
 	$(CC) $(CFLAGS) hospital.c -o hospital -lpthread
