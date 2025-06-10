@@ -58,10 +58,13 @@ int patients_left;
 
 int queue[HOSPITAL_CAPACITY], patients_waiting = 0;
 int medicine = MEDICINE_CAPACITY, pharmaceutists_waiting = 0;
-bool delivering = false;
 pthread_mutex_t hospital_mutex = PTHREAD_MUTEX_INITIALIZER;
-// May be waited on only by the doctor (singular) or pharmaceutists
+// May be waited on only by the doctor 
+pthread_cond_t doctor_sleep = PTHREAD_COND_INITIALIZER;
+// May be waited on only by the pharmaceutists waiting for the medicine to empty
 pthread_cond_t medicine_cond = PTHREAD_COND_INITIALIZER;
+// May be waited on only by the pharmaceutist waiting for delivery to finish
+pthread_cond_t delivery_cond = PTHREAD_COND_INITIALIZER;
 // May only be waited on by the patients currently in the queue
 pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 
@@ -77,7 +80,7 @@ void doctor() {
     // This was supposed to be the doctor's last message in the loop,
     // but it's convenient for it to be here
     log_msg("Lekarz: zasypiam");
-    pthread_cond_wait(&medicine_cond, &hospital_mutex);
+    pthread_cond_wait(&doctor_sleep, &hospital_mutex);
     log_msg("Lekarz: budzę się");
 
 patients_check:
@@ -97,22 +100,27 @@ patients_check:
       patients_waiting = 0;
 
       pthread_cond_broadcast(&queue_cond);
+      // This allows the patients to be released instantly but creates a potential deadlock
+      // pthread_mutex_unlock(&hospital_mutex);
+      // pthread_mutex_lock(&hospital_mutex);
     } else if (pharmaceutists_waiting > 0 && medicine < MEDICINE_CAPACITY) {
       log_msg("Lekarz: przyjmuję dostawę leków");
+      pthread_cond_broadcast(&medicine_cond);
+      pthread_mutex_unlock(&hospital_mutex);
+      pthread_mutex_lock(&hospital_mutex);
 
       sleep(1 + rand() % 3);
-      medicine = MEDICINE_CAPACITY;
 
       int dbg = pharmaceutists_waiting--;
-      // We are the only doctor, so this will awaken a pharmaceutist
-      pthread_cond_broadcast(&medicine_cond);
+      medicine = MEDICINE_CAPACITY;
+      pthread_cond_signal(&delivery_cond);
+      pthread_mutex_unlock(&hospital_mutex);
+      pthread_mutex_lock(&hospital_mutex);
       assert(pharmaceutists_waiting == dbg - 1);
 
       // This kind of goes against the specifiaction of the exercise 
       // but is required not to create a deadlock
       goto patients_check;
-    } else {
-      printf("fucked up %d farmów %d medycyny\n", pharmaceutists_waiting, medicine);
     }
   }
 
@@ -137,26 +145,21 @@ void *pharmaceutist(void *pharm_id) {
     pharmaceutists_waiting++;
     if (medicine >= HOSPITAL_CAPACITY) {
       log_msg_with_id(id, "Farmaceuta", "czekam na oproznienie apteczki");
-
-      // TODO: multiple pharmaceutists can deliver for some fucking reason
       do {
         pthread_cond_wait(&medicine_cond, &hospital_mutex);
-      } while (medicine >= HOSPITAL_CAPACITY || delivering == true);
+      } while (medicine >= HOSPITAL_CAPACITY);
     }
 
     assert(medicine < HOSPITAL_CAPACITY);
 
-    delivering = true;
-    log_msg_with_id(id, "Farmaceuta", "dostarczam leki");
-
+    // The doctor may not be sleeping right now
     log_msg_with_id(id, "Farmaceuta", "budzę lekarza");
-    pthread_cond_broadcast(&medicine_cond);
-    pthread_cond_wait(&medicine_cond, &hospital_mutex);
-    delivering = false;
+    pthread_cond_broadcast(&doctor_sleep);
+
+    log_msg_with_id(id, "Farmaceuta", "dostarczam leki");
+    pthread_cond_wait(&delivery_cond, &hospital_mutex);
 
     log_msg_with_id(id, "Farmaceuta", "zakończyłom dostawę");
-    printf("%d pacjentów %d leków %d farmaceutów\n",
-           patients_waiting, medicine, pharmaceutists_waiting);
     pthread_mutex_unlock(&hospital_mutex);
   }
 }
@@ -192,17 +195,12 @@ void *patient(void *patient_id) {
     asprintf(&msg, "czeka %d pacjentów na lekarza", patients_waiting);
     log_msg_with_id(id, "Pacjent", msg);
     free(msg);
-
-    pthread_cond_wait(&queue_cond, &hospital_mutex);
   } else {
     log_msg_with_id(id, "Pacjent", "budzę lekarza");
     assert(patients_waiting == HOSPITAL_CAPACITY || patients_waiting == patients_left);
-
-    pthread_cond_broadcast(&medicine_cond);
-    // Why do I have to do this - shouldn't just broadcasting be enough
-    // for the doctor to reclaim the mutex?
-    pthread_cond_wait(&queue_cond, &hospital_mutex);
+    pthread_cond_broadcast(&doctor_sleep);
   }
+  pthread_cond_wait(&queue_cond, &hospital_mutex);
 
   log_msg_with_id(id, "Pacjent", "kończę wizytę");
   pthread_mutex_unlock(&hospital_mutex);
